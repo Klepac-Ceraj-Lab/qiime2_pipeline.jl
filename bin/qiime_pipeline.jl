@@ -3,11 +3,15 @@
 # This workflow was generated from LangilleLab workflow and Qiime Tutorials, Qiime version 2020.8 
 # https://github.com/LangilleLab/microbiome_helper/wiki/Amplicon-SOP-v2-(qiime2-2020.8)
 
+using Pkg
+Pkg.activate(normpath(joinpath(@__DIR__, "..")))
+
 using ArgParse
 using Logging
 using LoggingExtras
 using Dates
 using Threads
+using QIIME2
 
 s = ArgParseSettings()
 
@@ -20,6 +24,7 @@ s = ArgParseSettings()
         help = "Mapping sample names to metadata"
     "classifier" # TODO: get from datadeps
         help = "path to .qza file with classifier" 
+        default = datadep"classifier_138_99_full/silva-138-99-nb-classifier.qza"
 
     "--input", "-i"
         help = "path to raw data input"
@@ -48,11 +53,6 @@ end
         action = :store_true
 end
 
-function qiime_cmd(command, subcommand; kwargs...)
-    c = "qimme $command $subcommand"    
-    kwa = reduce(*, [" --$(replace(k, "_"=>"-")) $v" for (k,v) in pairs(kwargs)])
-    return run(c * kwa)
-end
 
 function main()
     args = parse_args(ARGS, s)
@@ -69,7 +69,7 @@ function main()
     if isdir(fastqc_out)
         @info "Fastqc directory exists, skipping step. Overwrite with --force"
     else
-        isdir(args["input"]) || throw(ArgumentError("Input dir $(args["input"]) doesn't exist")
+        isdir(args["input"]) || throw(ArgumentError("Input dir $(args["input"]) doesn't exist"))
         run(`fastqc $rawdir -o $fastqc_out -t $threads`)
     end
 
@@ -86,7 +86,7 @@ function main()
     if isdir(reads_qza)
         @info "Reads.qza directory exists, skipping import step. Overwrite with --force"
     else
-        isdir(args["input"]) || throw(ArgumentError("Input dir $(args["input"]) doesn't exist")
+        isdir(args["input"]) || throw(ArgumentError("Input dir $(args["input"]) doesn't exist"))
         qiime_cmd("tools", "import";
                   type         = "SampleData[PairedEndSequencesWithQuality]",
                   input_path   = rawdir,
@@ -342,25 +342,22 @@ function main()
 
     qiime_cmd("tools", "export",
                 input_path = joinpath(dada2_out, "dada2_table_final.qza"),
-                output_path = "dada2_output_exported "
-            )
+                output_path = "dada2_output_exported"
+    )
 
 
-    run(```
-        biom add-metadata
-            -i dada2_output_exported/feature-table.biom
-            -o dada2_output_exported/feature-table_w_tax.biom
-                observation_metadata_fp = "taxa/taxonomy.tsv",
-                sc_separated = "taxonomy",
-    ```)
+    biom_cmd("add-metadata";
+            input = "dada2_output_exported/feature-table.biom",
+            output = "dada2_output_exported/feature-table_w_tax.biom",
+            observation_metadata_fp = "taxa/taxonomy.tsv",
+            sc_separated = "taxonomy"
+    )
 
-    run(```
-        biom convert
-            -i dada2_output_exported/feature-table_w_tax.biom
-            -o dada2_output_exported/feature-table_w_tax.txt
-            --to-tsv
-                header_key = "taxonomy",
-    ```)
+    biom_cmd("convert";
+            input = "dada2_output_exported/feature-table_w_tax.biom",
+            output = "dada2_output_exported/feature-table_w_tax.txt",
+            to_tsv = "header_key = \"taxonomy\""
+    )
 
 
 end
