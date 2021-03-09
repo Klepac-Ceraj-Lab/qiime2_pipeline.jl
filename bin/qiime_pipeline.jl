@@ -10,21 +10,21 @@ using ArgParse
 using Logging
 using LoggingExtras
 using Dates
-using Threads
 using QIIME2
+using DataDeps
 
 s = ArgParseSettings()
+
 
 # Project otions
 @add_arg_table! s begin
     "project_name"
         help = "Name of the project"
-        default = "MyProject_$(today())"
     "mapping_file"
         help = "Mapping sample names to metadata"
     "classifier" # TODO: get from datadeps
         help = "path to .qza file with classifier" 
-        default = datadep"classifier_138_99_full/silva-138-99-nb-classifier.qza"
+        # default = datadep"classifier_138_99_full"
 
     "--input", "-i"
         help = "path to raw data input"
@@ -33,8 +33,9 @@ s = ArgParseSettings()
         help = "Directory for output. Defaults to current working directory"
         default = "./"
     "--threads"
-        type = Int
+        arg_type = Int
         help = "Set number of threads to use. Defaults to Threads.nthreads()"
+        default = Threads.nthreads()
     "--force"
         help = "Re-run steps even if outputs directories already exist"
         action = :store_true
@@ -57,8 +58,13 @@ end
 function main()
     args = parse_args(ARGS, s)
     rawdir = abspath(args["input"])
-    outdir = abspath(args["output"])
+    outdir = joinpath(abspath(args["output"]), args["project_name"])
     threads = get(args, "threads", Threads.nthreads())
+    mapping_file = args["mapping_file"]
+    
+    @info args rawdir outdir threads mapping_file
+
+    !isdir(outdir) && mkdir(outdir)
 
     fastqc_out = joinpath(outdir, "fastqc_out")
     if isdir(fastqc_out) && args["force"]
@@ -70,7 +76,8 @@ function main()
         @info "Fastqc directory exists, skipping step. Overwrite with --force"
     else
         isdir(args["input"]) || throw(ArgumentError("Input dir $(args["input"]) doesn't exist"))
-        run(`fastqc $rawdir -o $fastqc_out -t $threads`)
+        mkdir(fastqc_out)
+        run(`fastqc $(readdir(rawdir, join=true)) -o $fastqc_out -t $threads`)
     end
 
 
@@ -87,6 +94,7 @@ function main()
         @info "Reads.qza directory exists, skipping import step. Overwrite with --force"
     else
         isdir(args["input"]) || throw(ArgumentError("Input dir $(args["input"]) doesn't exist"))
+        mkdir(reads_qza)
         qiime_cmd("tools", "import";
                   type         = "SampleData[PairedEndSequencesWithQuality]",
                   input_path   = rawdir,
@@ -105,17 +113,13 @@ function main()
     #    --p-front-f TYAATYGGANTCAACRCC
     #    --p-front-r CRGTGWGTRCAAGGRGCA
 
-    if isdir(reads_qza)
-        @info "Reads.qza directory exists, skipping cutadapt step. Overwrite with --force"
-    else
-        qiime_cmd("cutadapt", "trim-paired",
-                    i_demultiplexed_sequences = joinpath(reads_qza, "reads.qza"),
-                    p_cores                   = threads,
-                    p_front_f                 = "^GTGYCAGCMGCCGCGGTAA",
-                    p_front_r                 = "^CCGYCAATTYMTTTRAGTTT",
-                    o_trimmed_sequences       = joinpath(reads_qza, "reads_trimmed.qza")
-                    )
-    end
+    qiime_cmd("cutadapt", "trim-paired",
+                i_demultiplexed_sequences = joinpath(reads_qza, "reads.qza"),
+                p_cores                   = threads,
+                p_front_f                 = "^GTGYCAGCMGCCGCGGTAA",
+                p_front_r                 = "^CCGYCAATTYMTTTRAGTTT",
+                o_trimmed_sequences       = joinpath(reads_qza, "reads_trimmed.qza")
+                )
 
     dada2_out = joinpath(outdir, "dada2")
     if isdir(reads_qza) && args["force"]
@@ -159,8 +163,8 @@ function main()
     end
 
     qiime_cmd("tools", "export",
-                input_path = joinpath("taxa_out", "classification.qza"),
-                output_path = "taxa"
+                input_path = joinpath(taxa_out, "classification.qza"),
+                output_path = taxa_dir
             )
 
     qiime_cmd("feature-table", "tabulate-seqs", 
@@ -171,7 +175,7 @@ function main()
     # #!!!!change -p-min-frequency!!!
     # #filtering out rare ASVs (removed samples all samples that are <0.1% mean sample depth; mean sample depth =17,560 )
     qiime_cmd("feature-table", "filter-features",
-                i_table = "dada2_output/table.qza",
+                i_table = joinpath(dada2_out, "table.qza"),
                 p_min_frequency = 20,
                 p_min_samples = 1,
                 o_filtered_table = joinpath(dada2_out, "dada2_table_filt.qza")
@@ -179,7 +183,7 @@ function main()
 
     qiime_cmd("taxa", "filter-table",
                 i_table = joinpath(dada2_out, "dada2_table_filt.qza"),
-                i_taxonomy = joinpath("taxa_out", "classification.qza"),
+                i_taxonomy = joinpath(taxa_out, "classification.qza"),
                 p_include = "p__",
                 p_exclude = "mitochondria,chloroplast",
                 o_filtered_table = joinpath(dada2_out, "dada2_table_filt_contam.qza")   
@@ -193,7 +197,7 @@ function main()
                 i_table = joinpath(dada2_out, "dada2_table_final.qza"),
                 p_max_depth = 36000,
                 p_steps = 20,
-                p_metrics = "'observed_features'",
+                p_metrics = "observed_features",
                 o_visualization = joinpath(dada2_out, "rarefaction_curves_test.qzv")
             )
 
@@ -241,9 +245,9 @@ function main()
 
     qiime_cmd("taxa", "barplot",
                 i_table = joinpath(dada2_out, "dada2_table_final.qza"),
-                i_taxonomy = joinpath("taxa_out", "classification.qza"),
+                i_taxonomy = joinpath(taxa_out, "classification.qza"),
                 m_metadata_file = mapping_file,
-                o_visualization = joinpath("taxa_out", "taxa_barplot.qzv")
+                o_visualization = joinpath(taxa_out, "taxa_barplot.qzv")
             )
 
     qiime_cmd("feature-table", "group",
@@ -255,50 +259,53 @@ function main()
                 o_grouped_table = joinpath(dada2_out, "dada2_table_final_FullTreatment.qza")
             )
 
+    diversity_dir = joinpath(outdir, "diversity")
+
     qiime_cmd("diversity", "core-metrics-phylogenetic",
                 i_table = joinpath(dada2_out, "dada2_table_final.qza"),
                 i_phylogeny = joinpath(dada2_out, "rooted_tree.qza"),
                 p_sampling_depth = 5000,
                 m_metadata_file = mapping_file,
-                output_dir = "diversity"
+                output_dir = diversity_dir
             )
 
     qiime_cmd("diversity", "alpha-group-significance",
-                i_alpha_diversity = "diversity/shannon_vector.qza",
+                i_alpha_diversity = joinpath(diversity_dir, "shannon_vector.qza"),
                 m_metadata_file = mapping_file,
-                o_visualization = "diversity/shannon_compare_groups.qzv"
+                o_visualization = joinpath(diversity_dir, "shannon_compare_groups.qzv")
             )
 
     qiime_cmd("diversity", "alpha-group-significance",
-                i_alpha_diversity = "diversity/evenness_vector.qza",
+                i_alpha_diversity = joinpath(diversity_dir, "evenness_vector.qza"),
                 m_metadata_file = mapping_file,
-                o_visualization = "diversity/evenness_compare_groups.qzv"
+                o_visualization = joinpath(diversity_dir, "evenness_compare_groups.qzv")
             )
 
     qiime_cmd("diversity", "alpha-group-significance",
-                i_alpha_diversity = "diversity/faith_pd_vector.qza",
+                i_alpha_diversity = joinpath(diversity_dir, "faith_pd_vector.qza"),
                 m_metadata_file = mapping_file,
-                o_visualization = "diversity/faith_pd_compare_groups.qzv"
+                o_visualization = joinpath(diversity_dir, "faith_pd_compare_groups.qzv")
             )
 
-    qiime_cmd("composition", "add-pseudocount",
+    qiime_cmd("composition", "add-pseudocount";
                 i_table = joinpath(dada2_out, "dada2_table_final.qza"),
                 p_pseudocount = 1,
                 o_composition_table = joinpath(dada2_out, "dada2_table_final_pseudocount.qza")
             )
 
+    ancom_dir = joinpath(outdir, "ancom")
     qiime_cmd("composition", "ancom",
                 i_table = joinpath(dada2_out, "dada2_table_final_pseudocount.qza"),
                 m_metadata_file = mapping_file,
                 m_metadata_column = "FullTreatment",
-                output_dir = "ancom_output"
+                output_dir = ancom_dir
             )
 
     qiime_cmd("composition", "ancom",
                 i_table = joinpath(dada2_out, "dada2_table_final_pseudocount.qza"),
                 m_metadata_file = mapping_file,
                 m_metadata_column = "Treatment",
-                output_dir = "ancom2_output    "
+                output_dir = ancom_dir*"2" # TODO - fix this
             )
 
     qiime_cmd("tools", "export",
@@ -306,35 +313,36 @@ function main()
                 output_path = "dada2_output_exported"
             )
 
-    qiime_cmd("longitudinal", "anova",
-                m_metadata_file = "diversity/faith_pd_vector.qza",
-                m_metadata_file = mapping_file,
-                p_formula = "'faith_pd ~ FullTreatment * Day'",
-                o_visualization = "diversity/faiths_pd_anova.qzv",
+    ## Need to figure out how to deal with duplicate args
+    # qiime_cmd("longitudinal", "anova",
+    #             m_metadata_file = joinpath(diversity_dir, "faith_pd_vector.qza"),
+    #             m_metadata_file = mapping_file,
+    #             p_formula = "'faith_pd ~ FullTreatment * Day'",
+    #             o_visualization = joinpath(diversity_dir, "faiths_pd_anova.qzv"),
       
-    )
+    # )
 
     qiime_cmd("diversity", "beta-group-significance",
-                i_distance_matrix = "diversity/unweighted_unifrac_distance_matrix.qza",
+                i_distance_matrix = joinpath(diversity_dir, "unweighted_unifrac_distance_matrix.qza"),
                 m_metadata_file = mapping_file,
                 m_metadata_column = "FullTreatment",
-                o_visualization = "diversity/unweighted-unifrac-FullTreatment-significance.qzv",
-
-    )
-
-    qiime_cmd("diversity", "beta-group-significance",
-                i_distance_matrix = "diversity/weighted_unifrac_distance_matrix.qza",
-                m_metadata_file = mapping_file,
-                m_metadata_column = "FullTreatment",
-                o_visualization = "diversity/weighted-unifrac-FullTreatment-significance.qzv",
+                o_visualization = joinpath(diversity_dir, "unweighted-unifrac-FullTreatment-significance.qzv"),
 
     )
 
     qiime_cmd("diversity", "beta-group-significance",
-                i_distance_matrix = "diversity/bray_curtis_distance_matrix.qza",
+                i_distance_matrix = joinpath(diversity_dir, "weighted_unifrac_distance_matrix.qza"),
                 m_metadata_file = mapping_file,
                 m_metadata_column = "FullTreatment",
-                o_visualization = "diversity/Bray-Curtis-FullTreatment-significance.qzv",
+                o_visualization = joinpath(diversity_dir, "weighted-unifrac-FullTreatment-significance.qzv"),
+
+    )
+
+    qiime_cmd("diversity", "beta-group-significance",
+                i_distance_matrix = joinpath(diversity_dir, "bray_curtis_distance_matrix.qza"),
+                m_metadata_file = mapping_file,
+                m_metadata_column = "FullTreatment",
+                o_visualization = joinpath(diversity_dir, "Bray-Curtis-FullTreatment-significance.qzv"),
 
     )
 
@@ -347,54 +355,18 @@ function main()
 
 
     biom_cmd("add-metadata";
-            input = "dada2_output_exported/feature-table.biom",
-            output = "dada2_output_exported/feature-table_w_tax.biom",
-            observation_metadata_fp = "taxa/taxonomy.tsv",
+            input_fp = "dada2_output_exported/feature-table.biom",
+            output_fp = "dada2_output_exported/feature-table_w_tax.biom",
+            observation_metadata_fp = joinpath(taxa_out, "taxonomy.tsv"),
             sc_separated = "taxonomy"
     )
 
     biom_cmd("convert";
-            input = "dada2_output_exported/feature-table_w_tax.biom",
-            output = "dada2_output_exported/feature-table_w_tax.txt",
-            to_tsv = "header_key = \"taxonomy\""
+            input_fp = "dada2_output_exported/feature-table_w_tax.biom",
+            output_fp = "dada2_output_exported/feature-table_w_tax.txt",
+            to_tsv = "",
+            header_key = "taxonomy"
     )
-
-
 end
+
 main()
-
-
-
-# ```python
-# !
-
-
-
-# ```
-
-#     sed: -e: No such file or directory
-#     [32mExported dada2_output/dada2_table_final.qza as BIOMV210DirFmt to directory dada2_output_exported[0m
-#     Traceback (most recent call last):
-#       File "/Users/vklepacc/miniconda3/envs/qiime2-2020.8/bin/biom", line 11, in <module>
-#         sys.exit(cli())
-#       File "/Users/vklepacc/miniconda3/envs/qiime2-2020.8/lib/python3.6/site-packages/click/core.py", line 829, in __call__
-#         return self.main(*args, **kwargs)
-#       File "/Users/vklepacc/miniconda3/envs/qiime2-2020.8/lib/python3.6/site-packages/click/core.py", line 782, in main
-#         rv = self.invoke(ctx)
-#       File "/Users/vklepacc/miniconda3/envs/qiime2-2020.8/lib/python3.6/site-packages/click/core.py", line 1259, in invoke
-#         return _process_result(sub_ctx.command.invoke(sub_ctx))
-#       File "/Users/vklepacc/miniconda3/envs/qiime2-2020.8/lib/python3.6/site-packages/click/core.py", line 1066, in invoke
-#         return ctx.invoke(self.callback, **ctx.params)
-#       File "/Users/vklepacc/miniconda3/envs/qiime2-2020.8/lib/python3.6/site-packages/click/core.py", line 610, in invoke
-#         return callback(*args, **kwargs)
-#       File "/Users/vklepacc/miniconda3/envs/qiime2-2020.8/lib/python3.6/site-packages/biom/cli/metadata_adder.py", line 107, in add_metadata
-#         float_fields, sample_header, observation_header)
-#       File "/Users/vklepacc/miniconda3/envs/qiime2-2020.8/lib/python3.6/site-packages/biom/cli/metadata_adder.py", line 174, in _add_metadata
-#         header=observation_header)
-#       File "/Users/vklepacc/miniconda3/envs/qiime2-2020.8/lib/python3.6/site-packages/biom/parse.py", line 538, in from_file
-#         raise BiomParseException("No header line was found in mapping "
-#     biom.exception.BiomParseException: No header line was found in mapping file.
-#     Usage: biom convert [OPTIONS]
-#     Try 'biom convert -h' for help.
-    
-#     Error: Invalid value for '-i' / '--input-fp': File 'dada2_output_exported/feature-table_w_tax.biom' does not exist.
