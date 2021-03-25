@@ -3,9 +3,6 @@
 # This workflow was generated from LangilleLab workflow and Qiime Tutorials, Qiime version 2020.8 
 # https://github.com/LangilleLab/microbiome_helper/wiki/Amplicon-SOP-v2-(qiime2-2020.8)
 
-using Pkg
-Pkg.activate(normpath(joinpath(@__DIR__, "..")))
-
 using ArgParse
 using Logging
 using LoggingExtras
@@ -13,61 +10,65 @@ using Dates
 using QIIME2
 using DataDeps
 
-s = ArgParseSettings()
+settings = ArgParseSettings()
 
+@add_arg_table! settings begin
+    "--verbose", "-v"
+        help = "Set logging level to INFO"
+        action = :store_true
+    "--debug"
+        help = "Set logging level to DEBUG. Overrides --verbose."
+        action = :store_true
+    "--quiet", "-q"
+        help = "Supress all STDOUT logging other than ERROR. Overrides --verbose and --debug"
+        action = :store_true
+    "--log", "-l"
+        help = "Store log to file, regardless of whether --quiet is set. That is, one can do `--verbose --log file.log --quiet`"
+    "--threads"
+        arg_type = Int
+        help = "Set number of threads to use. Defaults to Threads.nthreads()"
+        default = Threads.nthreads()
+
+end
+
+@add_arg_table! settings begin
+    "basic"
+        action = :command
+end
 
 # Project otions
-@add_arg_table! s begin
-    "project_name"
+@add_arg_table! settings["basic"] begin
+    "--name", "-n"
         help = "Name of the project"
-    "mapping_file"
+        default = "MyProject_$(today())"
+    "--mapping_file", "-m"
         help = "Mapping sample names to metadata"
-    "classifier" # TODO: get from datadeps
+    "--classifier", "-c"
         help = "path to .qza file with classifier" 
         # default = datadep"classifier_138_99_full"
-
     "--input", "-i"
         help = "path to raw data input"
         default = "raw_data"
     "--output", "-o"
         help = "Directory for output. Defaults to current working directory"
         default = "./"
-    "--threads"
-        arg_type = Int
-        help = "Set number of threads to use. Defaults to Threads.nthreads()"
-        default = Threads.nthreads()
     "--force"
         help = "Re-run steps even if outputs directories already exist"
         action = :store_true
 end
 
-# Logging options
-@add_arg_table! s begin
-    "--verbose", "-v"
-        help = "Set logging level to INFO"
-        action = :store_true
-    "--debug"
-        help = "Set logging level to DEBUG"
-        action = :store_true
-    "--quiet", "-q"
-        help = "Supress STDOUT logging"
-        action = :store_true
-end
-
-
-function main()
-    args = parse_args(ARGS, s)
-    rawdir = abspath(args["input"])
-    outdir = joinpath(abspath(args["output"]), args["project_name"])
-    threads = get(args, "threads", Threads.nthreads())
-    mapping_file = args["mapping_file"]
+function basic(subargs)
+    rawdir = abspath(subargs["input"])
+    outdir = joinpath(abspath(subargs["output"]), subargs["name>`"])
+    threads = get(subargs, "threads", Threads.nthreads())
+    mapping_file = subargs["mapping_file"]
     
-    @info args rawdir outdir threads mapping_file
+    @info subargs rawdir outdir threads mapping_file
 
     !isdir(outdir) && mkdir(outdir)
 
     fastqc_out = joinpath(outdir, "fastqc_out")
-    if isdir(fastqc_out) && args["force"]
+    if isdir(fastqc_out) && subargs["force"]
         @warn "Removing fastqc output dir: $fastqc_out"
         rm(fastqc_out, force = true)
     end
@@ -75,7 +76,7 @@ function main()
     if isdir(fastqc_out)
         @info "Fastqc directory exists, skipping step. Overwrite with --force"
     else
-        isdir(args["input"]) || throw(ArgumentError("Input dir $(args["input"]) doesn't exist"))
+        isdir(subargs["input"]) || throw(ArgumentError("Input dir $(subargs["input"]) doesn't exist"))
         mkdir(fastqc_out)
         run(`fastqc $(readdir(rawdir, join=true)) -o $fastqc_out -t $threads`)
     end
@@ -85,7 +86,7 @@ function main()
     # This allows for standardization of QIIME 2 analyses and keeps track of all commands that were run to produce a file.
     # The extension for the artifact files is QZA.
     reads_qza = joinpath(outdir, "reads_qza")
-    if isdir(reads_qza) && args["force"]
+    if isdir(reads_qza) && subargs["force"]
         @warn "Removing fastqc output dir: $reads_qza"
         rm(reads_qza, force = true)
     end
@@ -93,7 +94,7 @@ function main()
     if isdir(reads_qza)
         @info "Reads.qza directory exists, skipping import step. Overwrite with --force"
     else
-        isdir(args["input"]) || throw(ArgumentError("Input dir $(args["input"]) doesn't exist"))
+        isdir(subargs["input"]) || throw(ArgumentError("Input dir $(subargs["input"]) doesn't exist"))
         mkdir(reads_qza)
         qiime_cmd("tools", "import";
                   type         = "SampleData[PairedEndSequencesWithQuality]",
@@ -122,7 +123,7 @@ function main()
                 )
 
     dada2_out = joinpath(outdir, "dada2")
-    if isdir(reads_qza) && args["force"]
+    if isdir(reads_qza) && subargs["force"]
         @warn "Removing fastqc output dir: $dada2_out"
         rm(dada2_out, force = true)
     end
@@ -143,7 +144,7 @@ function main()
     end
 
     taxa_out = joinpath(outdir, "taxa")
-    if isdir(reads_qza) && args["force"]
+    if isdir(reads_qza) && subargs["force"]
         @warn "Removing fastqc output dir: $taxa_out"
         rm(taxa_out, force = true)
     end
@@ -151,7 +152,7 @@ function main()
     if isdir(taxa_out)
         @info "Taxa directory exists, skipping classification step. Overwrite with --force"
     else
-        classifier = args["classifier"]
+        classifier = subargs["classifier"]
         qiime_cmd("feature-classifier", "classify-sklearn";
                         i_reads = joinpath(dada2_out, "representative_sequences.qza"),
                         i_classifier = classifier,
@@ -176,7 +177,7 @@ function main()
     # #filtering out rare ASVs (removed samples all samples that are <0.1% mean sample depth; mean sample depth =17,560 )
     qiime_cmd("feature-table", "filter-features",
                 i_table = joinpath(dada2_out, "table.qza"),
-                p_min_frequency = 20,
+                p_min_frequency = 20, # Should be 0.1 % of mean
                 p_min_samples = 1,
                 o_filtered_table = joinpath(dada2_out, "dada2_table_filt.qza")
             )
@@ -196,7 +197,7 @@ function main()
     qiime_cmd("diversity", "alpha-rarefaction",
                 i_table = joinpath(dada2_out, "dada2_table_final.qza"),
                 p_max_depth = 36000,
-                p_steps = 20,
+                p_steps = 20, 
                 p_metrics = "observed_features",
                 o_visualization = joinpath(dada2_out, "rarefaction_curves_test.qzv")
             )
@@ -233,14 +234,6 @@ function main()
                 i_phylogeny = joinpath(dada2_out, "rooted_tree.qza"),
                 m_metadata_file = mapping_file,
                 o_visualization = "rarefaction_curves.qzv"
-            )
-
-    qiime_cmd("diversity", "alpha-rarefaction",
-                i_table = joinpath(dada2_out, "dada2_table_final.qza"),
-                p_max_depth = 36000,
-                p_steps = 20,
-                i_phylogeny = joinpath(dada2_out, "rooted_tree.qza"),
-                o_visualization = "rarefaction_curves_eachsample.qzv"
             )
 
     qiime_cmd("taxa", "barplot",
@@ -313,7 +306,7 @@ function main()
                 output_path = "dada2_output_exported"
             )
 
-    ## Need to figure out how to deal with duplicate args
+    ## Need to figure out how to deal with duplicate subargs
     # qiime_cmd("longitudinal", "anova",
     #             m_metadata_file = joinpath(diversity_dir, "faith_pd_vector.qza"),
     #             m_metadata_file = mapping_file,
@@ -327,22 +320,6 @@ function main()
                 m_metadata_file = mapping_file,
                 m_metadata_column = "FullTreatment",
                 o_visualization = joinpath(diversity_dir, "unweighted-unifrac-FullTreatment-significance.qzv"),
-
-    )
-
-    qiime_cmd("diversity", "beta-group-significance",
-                i_distance_matrix = joinpath(diversity_dir, "weighted_unifrac_distance_matrix.qza"),
-                m_metadata_file = mapping_file,
-                m_metadata_column = "FullTreatment",
-                o_visualization = joinpath(diversity_dir, "weighted-unifrac-FullTreatment-significance.qzv"),
-
-    )
-
-    qiime_cmd("diversity", "beta-group-significance",
-                i_distance_matrix = joinpath(diversity_dir, "bray_curtis_distance_matrix.qza"),
-                m_metadata_file = mapping_file,
-                m_metadata_column = "FullTreatment",
-                o_visualization = joinpath(diversity_dir, "Bray-Curtis-FullTreatment-significance.qzv"),
 
     )
 
@@ -368,5 +345,30 @@ function main()
             header_key = "taxonomy"
     )
 end
+
+function main()
+    args = parse_args(ARGS, settings)
+
+    logger = args["debug"] ? ConsoleLogger(stderr, Logging.Debug) :
+             args["verbose"] ? MinLevelLogger(global_logger(), Logging.Info) :
+             MinLevelLogger(global_logger(), Logging.Warn)
+
+    flogger = !isnothing(args["log"]) ? MinLevelLogger(FileLogger(args["log"]), Logging.min_enabled_level(logger)) : nothing
+
+    if args["quiet"]
+        qlogger = ConsoleLogger(stderr, Logging.Error)
+        isnothing(flogger) ? global_logger(qlogger) : global_logger(TeeLogger(qlogger, flogger))
+    elseif isnothing(flogger)
+        global_logger(logger)
+    else
+        global_logger(TeeLogger(logger, flogger))
+    end
+
+    torun = args["%COMMAND%"]
+
+    Base.eval(@__MODULE__, Symbol(torun))(args[torun])
+end
+
+main()
 
 main()

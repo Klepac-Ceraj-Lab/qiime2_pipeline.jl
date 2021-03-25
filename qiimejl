@@ -1,3 +1,5 @@
-#/usr/bin/sh
+#/usr/bin/env sh
 
-julia --compile=min $(dirname $(realpath ${0}))/bin/qiime_pipeline.jl $@
+export SCRIPTDIR=$(dirname $(realpath ${0}))
+
+julia --threads=16 --compile=min --project=$SCRIPTDIR $SCRIPTDIR/bin/qiime_pipeline.jl $@

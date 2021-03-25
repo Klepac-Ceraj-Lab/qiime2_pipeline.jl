@@ -1,7 +1,7 @@
 module QIIME2
 
 using DataDeps
-using Conda
+# using Conda
 
 export 
     qiime_cmd,
