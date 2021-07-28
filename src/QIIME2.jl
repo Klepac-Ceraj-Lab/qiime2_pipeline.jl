@@ -1,11 +1,15 @@
 module QIIME2
 
 using DataDeps
+using CSV
+using DataFrames
+using Statistics
 # using Conda
 
 export 
     qiime_cmd,
-    biom_cmd
+    biom_cmd,
+    depth_filter
 
 function __init__()
     register(DataDep(
@@ -32,6 +36,24 @@ function biom_cmd(command; kwargs...)
     deleteat!(c, findall(==(""), c))
     @info "Running command: $(Cmd(c))"
     return run(Cmd(c))
+end
+
+
+function depth_filter(dada_dir, perc=0.1)
+    biom = joinpath(dada_dir, "feature-table.biom")
+    features = joinpath(dada_dir, "feature-table.tsv")
+    
+    if !isfile(features)
+        @info "Couldn't find feature table, trying to export from qza form"
+        qiime_cmd("tools", "export",
+                   input_path = joinpath(dada_dir, "table.qza"),
+                   output_path = dada_dir
+        )
+        biom_cmd("convert", input_fp=biom, output_fp=features, to_tsv="")
+    end
+
+    df = CSV.read(features, DataFrame, header=2, delim='\t')
+    return mean(sum.(eachcol(df[!, 2:end]))) * (perc / 100)
 end
 
 end

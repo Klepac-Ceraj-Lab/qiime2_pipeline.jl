@@ -45,7 +45,7 @@ end
         help = "Mapping sample names to metadata"
     "--classifier", "-c"
         help = "path to .qza file with classifier" 
-        # default = datadep"classifier_138_99_full"
+        default = datadep"classifier_138_99_full/silva-138-99-nb-classifier.qza"
     "--input", "-i"
         help = "path to raw data input"
         default = "raw_data"
@@ -55,11 +55,30 @@ end
     "--force"
         help = "Re-run steps even if outputs directories already exist"
         action = :store_true
+    "--input-format"
+        default = "CasavaOneEightSingleLanePerSampleDirFmt"
+    "--fwd-primer"
+        default ="GTGYCAGCMGCCGCGGTAA"
+    "--rev-primer"
+        default = "CGYCAATTYMTTTRAGTTT"
+    "--fwd-trunc"
+        default = 270
+    "--rev-trunc"
+        default = 270
+    
+end
+
+
+function _script_setup(args, subargs)
+    rawdir = abspath(subargs["input"])
+    outdir = joinpath(abspath(subargs["output"]), subargs["name"])
+    threads = get(subargs, "threads", Threads.nthreads())
+    mapping_file = subargs["mapping_file"]
 end
 
 function basic(subargs)
     rawdir = abspath(subargs["input"])
-    outdir = joinpath(abspath(subargs["output"]), subargs["name>`"])
+    outdir = joinpath(abspath(subargs["output"]), subargs["name"])
     threads = get(subargs, "threads", Threads.nthreads())
     mapping_file = subargs["mapping_file"]
     
@@ -100,27 +119,26 @@ function basic(subargs)
                   type         = "SampleData[PairedEndSequencesWithQuality]",
                   input_path   = rawdir,
                   output_path  = joinpath(reads_qza, "reads.qza"),
-                  input_format = "CasavaOneEightSingleLanePerSampleDirFmt" # TODO: Make input format configurable
-        ) 
+                  input_format = subargs["input-format"])
+
+        # Trim primers with cutadapt
+        # Trim primers with cutadapt - remove all primers and take out all sequences that don't begin with primer sequence  
+        # 16S V4-V5 region bacteria + archaea  
+        # 515F = GTGYCAGCMGCCGCGGTAA  
+        # 926R = CCGYCAATTYMTTTRAGTTT  
+
+        # For V6-V8 region:  
+        #    --p-front-f TYAATYGGANTCAACRCC
+        #    --p-front-r CRGTGWGTRCAAGGRGCA
+        
+        qiime_cmd("cutadapt", "trim-paired",
+                  i_demultiplexed_sequences = joinpath(reads_qza, "reads.qza"),
+                  p_cores                   = threads,
+                  p_front_f                 = "^" * subargs["fwd-primer"],
+                  p_front_r                 = "^" * subargs["rev-primer"],
+                  o_trimmed_sequences       = joinpath(reads_qza, "reads_trimmed.qza")
+                  )
     end
-
-    # Trim primers with cutadapt
-    # Trim primers with cutadapt - remove all primers and take out all sequences that don't begin with primer sequence  
-    # 16S V4-V5 region bacteria + archaea  
-    # 515F = GTGYCAGCMGCCGCGGTAA  
-    # 926R = CCGYCAATTYMTTTRAGTTT  
-
-    # For V6-V8 region:  
-    #    --p-front-f TYAATYGGANTCAACRCC
-    #    --p-front-r CRGTGWGTRCAAGGRGCA
-
-    qiime_cmd("cutadapt", "trim-paired",
-                i_demultiplexed_sequences = joinpath(reads_qza, "reads.qza"),
-                p_cores                   = threads,
-                p_front_f                 = "^GTGYCAGCMGCCGCGGTAA",
-                p_front_r                 = "^CCGYCAATTYMTTTRAGTTT",
-                o_trimmed_sequences       = joinpath(reads_qza, "reads_trimmed.qza")
-                )
 
     dada2_out = joinpath(outdir, "dada2")
     if isdir(reads_qza) && subargs["force"]
@@ -134,8 +152,8 @@ function basic(subargs)
         # TODO: Make options configurable
         qiime_cmd("dada2", "denoise-paired";
                         i_demultiplexed_seqs = joinpath(reads_qza, "reads_trimmed.qza"),
-                        p_trunc_len_f        = 270,
-                        p_trunc_len_r        = 210,
+                        p_trunc_len_f        = subargs["fwd-trunc"],
+                        p_trunc_len_r        = subargs["rev-trunc"],
                         p_max_ee_f           = 2,
                         p_max_ee_r           = 3,
                         p_n_threads          = threads,
@@ -144,7 +162,7 @@ function basic(subargs)
     end
 
     taxa_out = joinpath(outdir, "taxa")
-    if isdir(reads_qza) && subargs["force"]
+    if isdir(taxa_out) && subargs["force"]
         @warn "Removing fastqc output dir: $taxa_out"
         rm(taxa_out, force = true)
     end
@@ -160,21 +178,22 @@ function basic(subargs)
                         output_dir = taxa_out
                     )
 
-        qiime_cmd("tools", "export"; input_path = joinpath(taxa_out, "classification.qza"), output_path = taxa_out)
     end
 
     qiime_cmd("tools", "export",
                 input_path = joinpath(taxa_out, "classification.qza"),
-                output_path = taxa_dir
+                output_path = taxa_out
             )
+    @info "If doing depth filter, use: " depth_filter(dada2_out)
+end
 
+function features(subargs)
     qiime_cmd("feature-table", "tabulate-seqs", 
                 i_data = joinpath(dada2_out, "representative_sequences.qza"),
                 o_visualization = joinpath(dada2_out, "representative_sequences.qzv")
             )
 
-    # #!!!!change -p-min-frequency!!!
-    # #filtering out rare ASVs (removed samples all samples that are <0.1% mean sample depth; mean sample depth =17,560 )
+    pmin = isnothing(subargs["use-min-freq"]) ? 0 : depth_filter(dada2_out)
     qiime_cmd("feature-table", "filter-features",
                 i_table = joinpath(dada2_out, "table.qza"),
                 p_min_frequency = 20, # Should be 0.1 % of mean
@@ -368,7 +387,5 @@ function main()
 
     Base.eval(@__MODULE__, Symbol(torun))(args[torun])
 end
-
-main()
 
 main()

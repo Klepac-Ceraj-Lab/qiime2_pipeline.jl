@@ -2,4 +2,4 @@
 
 export SCRIPTDIR=$(dirname $(realpath ${0}))
 
-julia --threads=16 --compile=min --project=$SCRIPTDIR $SCRIPTDIR/bin/qiime_pipeline.jl $@
+julia --threads=32 --compile=min --project=$SCRIPTDIR $SCRIPTDIR/bin/qiime_pipeline.jl $@
